@@ -160,12 +160,7 @@ func (cache *importCache) importBinary(importedFrom, importedPath string, i *int
 	if err != nil {
 		return nil, i.Error(err.Error())
 	}
-	bytes := data.Data()
-	elements := make([]*cachedThunk, len(bytes))
-	for i := range bytes {
-		elements[i] = readyThunk(intToValue(int(bytes[i])))
-	}
-	return makeValueArray(elements), nil
+	return makeValueBinary(data.Data()), nil
 }
 
 func nodeToPV(i *interpreter, filename string, node ast.Node) *cachedThunk {
