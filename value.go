@@ -285,23 +285,89 @@ func (*valueNull) getType() *valueType {
 // ast.Array
 // -------------------------------------
 
-type valueArray struct {
+type valueArray interface {
+	value
+	length() int
+	index(i *interpreter, index int) (value, error)
+	indexThunk(i *interpreter, index int) (*cachedThunk, error)
+	// indexThunkUnsafe panics if index is out of bounds
+	indexThunkUnsafe(index int) *cachedThunk
+}
+
+// valueBinary is an efficient []byte that looks like an array of numbers
+type valueBinary struct {
+	valueBase
+	value []byte
+}
+
+func (b *valueBinary) length() int {
+	return len(b.value)
+}
+
+func (b *valueBinary) index(i *interpreter, index int) (value, error) {
+	if 0 <= index && index < b.length() {
+		return intToValue(int(b.value[index])), nil
+	}
+	return nil, i.Error(fmt.Sprintf("Index %d out of bounds, not within [0, %v)", index, b.length()))
+}
+
+func (b *valueBinary) indexThunk(i *interpreter, index int) (*cachedThunk, error) {
+	value, err := b.index(i, index)
+	if err != nil {
+		return nil, err
+	}
+	return readyThunk(value), nil
+}
+
+func (b *valueBinary) indexThunkUnsafe(index int) *cachedThunk {
+	return readyThunk(intToValue(int(b.value[index])))
+}
+
+func (b *valueBinary) data() []byte {
+	return b.value
+}
+
+func makeValueBinary(v []byte) *valueBinary {
+	return &valueBinary{value: v}
+}
+
+func (b *valueBinary) getType() *valueType {
+	return arrayType
+}
+
+type valueThunkArray struct {
 	valueBase
 	elements []*cachedThunk
 }
 
-func (arr *valueArray) index(i *interpreter, index int) (value, error) {
+func (arr *valueThunkArray) index(i *interpreter, index int) (value, error) {
+	item, err := arr.indexThunk(i, index)
+	if err != nil {
+		return nil, err
+	}
+	return i.evaluatePV(item)
+}
+
+func (arr *valueThunkArray) indexThunk(i *interpreter, index int) (*cachedThunk, error) {
 	if 0 <= index && index < arr.length() {
-		return i.evaluatePV(arr.elements[index])
+		return arr.elements[index], nil
 	}
 	return nil, i.Error(fmt.Sprintf("Index %d out of bounds, not within [0, %v)", index, arr.length()))
 }
 
-func (arr *valueArray) length() int {
+func (arr *valueThunkArray) indexThunkUnsafe(index int) *cachedThunk {
+	return arr.elements[index]
+}
+
+func (arr *valueThunkArray) length() int {
 	return len(arr.elements)
 }
 
-func makeValueArray(elements []*cachedThunk) *valueArray {
+func (*valueThunkArray) getType() *valueType {
+	return arrayType
+}
+
+func makeValueArray(elements []*cachedThunk) *valueThunkArray {
 	// We don't want to keep a bigger array than necessary
 	// so we create a new one with minimal capacity
 	var arrayElems []*cachedThunk
@@ -311,20 +377,24 @@ func makeValueArray(elements []*cachedThunk) *valueArray {
 		arrayElems = make([]*cachedThunk, len(elements))
 		copy(arrayElems, elements)
 	}
-	return &valueArray{
+	return &valueThunkArray{
 		elements: arrayElems,
 	}
 }
 
-func concatArrays(a, b *valueArray) *valueArray {
-	result := make([]*cachedThunk, 0, len(a.elements)+len(b.elements))
-	result = append(result, a.elements...)
-	result = append(result, b.elements...)
-	return &valueArray{elements: result}
+func emptyArray() valueArray {
+	return &valueThunkArray{}
 }
 
-func (*valueArray) getType() *valueType {
-	return arrayType
+func concatArrays(a, b valueArray) valueArray {
+	result := make([]*cachedThunk, 0, a.length()+b.length())
+	for idx := 0; idx < a.length(); idx++ {
+		result = append(result, a.indexThunkUnsafe(idx))
+	}
+	for idx := 0; idx < b.length(); idx++ {
+		result = append(result, b.indexThunkUnsafe(idx))
+	}
+	return &valueThunkArray{elements: result}
 }
 
 // ast.Function

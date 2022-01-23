@@ -155,7 +155,7 @@ func (cache *importCache) importString(importedFrom, importedPath string, i *int
 }
 
 // ImportString imports an array of bytes, caches it and then returns it.
-func (cache *importCache) importBinary(importedFrom, importedPath string, i *interpreter) (*valueArray, error) {
+func (cache *importCache) importBinary(importedFrom, importedPath string, i *interpreter) (valueArray, error) {
 	data, _, err := cache.importData(importedFrom, importedPath)
 	if err != nil {
 		return nil, i.Error(err.Error())

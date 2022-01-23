@@ -461,7 +461,7 @@ func (i *interpreter) evaluate(a ast.Node, tc tailCallStatus) (value, error) {
 				return nil, err
 			}
 			return target.index(i, indexString.getGoString())
-		case *valueArray:
+		case valueArray:
 			indexInt, err := i.getNumber(index)
 			if err != nil {
 				return nil, err
@@ -596,7 +596,7 @@ func (i *interpreter) evaluate(a ast.Node, tc tailCallStatus) (value, error) {
 	case *astMakeArrayElement:
 		arguments := callArguments{
 			positional: []*cachedThunk{
-				&cachedThunk{
+				{
 					content: intToValue(node.index),
 				},
 			},
@@ -687,14 +687,14 @@ func (i *interpreter) manifestJSON(v value) (interface{}, error) {
 	case *valueNull:
 		return nil, nil
 
-	case *valueArray:
-		result := make([]interface{}, 0, len(v.elements))
-		for index, th := range v.elements {
+	case valueArray:
+		result := make([]interface{}, 0, v.length())
+		for index := 0; index < v.length(); index++ {
 			msg := ast.MakeLocationRangeMessage(fmt.Sprintf("Array element %d", index))
 			i.stack.setCurrentTrace(traceElement{
 				loc: &msg,
 			})
-			elVal, err := i.evaluatePV(th)
+			elVal, err := v.index(i, index)
 			if err != nil {
 				i.stack.clearCurrentTrace()
 				return nil, err
@@ -1115,17 +1115,17 @@ func (i *interpreter) evaluateBoolean(pv potentialValue) (*valueBoolean, error) 
 	return i.getBoolean(v)
 }
 
-func (i *interpreter) getArray(val value) (*valueArray, error) {
+func (i *interpreter) getArray(val value) (valueArray, error) {
 	switch v := val.(type) {
-	case *valueArray:
+	case valueArray:
 		return v, nil
 	default:
-		return nil, i.typeErrorSpecific(val, &valueArray{})
+		return nil, i.typeErrorSpecific(val, emptyArray())
 	}
 }
 
 //nolint:unused
-func (i *interpreter) evaluateArray(pv potentialValue) (*valueArray, error) {
+func (i *interpreter) evaluateArray(pv potentialValue) (valueArray, error) {
 	v, err := i.evaluatePV(pv)
 	if err != nil {
 		return nil, err

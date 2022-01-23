@@ -65,7 +65,7 @@ func builtinPlus(i *interpreter, x, y value) (value, error) {
 			return nil, i.typeErrorSpecific(y, &valueObject{})
 		}
 
-	case *valueArray:
+	case valueArray:
 		right, err := i.getArray(y)
 		if err != nil {
 			return nil, err
@@ -144,7 +144,7 @@ func valueCmp(i *interpreter, x, y value) (int, error) {
 			return 0, err
 		}
 		return stringCmp(left, right), nil
-	case *valueArray:
+	case valueArray:
 		right, err := i.getArray(y)
 		if err != nil {
 			return 0, err
@@ -155,7 +155,7 @@ func valueCmp(i *interpreter, x, y value) (int, error) {
 	}
 }
 
-func arrayCmp(i *interpreter, x, y *valueArray) (int, error) {
+func arrayCmp(i *interpreter, x, y valueArray) (int, error) {
 	for index := 0; index < minInt(x.length(), y.length()); index++ {
 		left, err := x.index(i, index)
 		if err != nil {
@@ -213,8 +213,8 @@ func builtinLength(i *interpreter, x value) (value, error) {
 	switch x := x.(type) {
 	case *valueObject:
 		num = len(objectFields(x, withoutHidden))
-	case *valueArray:
-		num = len(x.elements)
+	case valueArray:
+		num = x.length()
 	case valueString:
 		num = x.length()
 	case *valueFunction:
@@ -295,14 +295,14 @@ func builtinFlatMap(i *interpreter, funcv, arrv value) (value, error) {
 		return nil, err
 	}
 	switch arrv := arrv.(type) {
-	case *valueArray:
+	case valueArray:
 		num := arrv.length()
 		// Start with capacity of the original array.
 		// This may spare us a few reallocations.
 		// TODO(sbarzowski) verify that it actually helps
 		elems := make([]*cachedThunk, 0, num)
 		for counter := 0; counter < num; counter++ {
-			returnedValue, err := fun.call(i, args(arrv.elements[counter]))
+			returnedValue, err := fun.call(i, args(arrv.indexThunkUnsafe(counter)))
 			if err != nil {
 				return nil, err
 			}
@@ -310,7 +310,9 @@ func builtinFlatMap(i *interpreter, funcv, arrv value) (value, error) {
 			if err != nil {
 				return nil, err
 			}
-			elems = append(elems, returned.elements...)
+			for idx := 0; idx < returned.length(); idx++ {
+				elems = append(elems, returned.indexThunkUnsafe(idx))
+			}
 		}
 		return makeValueArray(elems), nil
 	case valueString:
@@ -332,36 +334,37 @@ func builtinFlatMap(i *interpreter, funcv, arrv value) (value, error) {
 	}
 }
 
-func joinArrays(i *interpreter, sep *valueArray, arr *valueArray) (value, error) {
-	result := make([]*cachedThunk, 0, arr.length())
-	first := true
-	for _, elem := range arr.elements {
-		elemValue, err := i.evaluatePV(elem)
+func joinArrays(i *interpreter, sep valueArray, arr valueArray) (value, error) {
+	result := make([]*cachedThunk, 0, arr.length()*sep.length())
+	for idx := 0; idx < arr.length(); idx++ {
+		elemValue, err := arr.index(i, idx)
 		if err != nil {
 			return nil, err
 		}
 		switch v := elemValue.(type) {
 		case *valueNull:
 			continue
-		case *valueArray:
-			if !first {
-				result = append(result, sep.elements...)
+		case valueArray:
+			if idx != 0 {
+				for sepIdx := 0; sepIdx < sep.length(); sepIdx++ {
+					result = append(result, sep.indexThunkUnsafe(sepIdx))
+				}
 			}
-			result = append(result, v.elements...)
+			for vIdx := 0; vIdx < v.length(); vIdx++ {
+				result = append(result, v.indexThunkUnsafe(vIdx))
+			}
 		default:
-			return nil, i.typeErrorSpecific(elemValue, &valueArray{})
+			return nil, i.typeErrorSpecific(elemValue, emptyArray())
 		}
-		first = false
 
 	}
 	return makeValueArray(result), nil
 }
 
-func joinStrings(i *interpreter, sep valueString, arr *valueArray) (value, error) {
-	result := make([]rune, 0, arr.length())
-	first := true
-	for _, elem := range arr.elements {
-		elemValue, err := i.evaluatePV(elem)
+func joinStrings(i *interpreter, sep valueString, arr valueArray) (value, error) {
+	result := make([]rune, 0, arr.length()*sep.length())
+	for idx := 0; idx < arr.length(); idx++ {
+		elemValue, err := arr.index(i, idx)
 		if err != nil {
 			return nil, err
 		}
@@ -369,14 +372,13 @@ func joinStrings(i *interpreter, sep valueString, arr *valueArray) (value, error
 		case *valueNull:
 			continue
 		case valueString:
-			if !first {
+			if idx != 0 {
 				result = append(result, sep.getRunes()...)
 			}
 			result = append(result, v.getRunes()...)
 		default:
 			return nil, i.typeErrorSpecific(elemValue, emptyString())
 		}
-		first = false
 	}
 	return makeStringFromRunes(result), nil
 }
@@ -389,7 +391,7 @@ func builtinJoin(i *interpreter, sep, arrv value) (value, error) {
 	switch sep := sep.(type) {
 	case valueString:
 		return joinStrings(i, sep, arr)
-	case *valueArray:
+	case valueArray:
 		return joinArrays(i, sep, arr)
 	default:
 		return nil, i.Error("join first parameter should be string or array, got " + sep.getType().name)
@@ -402,12 +404,12 @@ func builtinReverse(i *interpreter, arrv value) (value, error) {
 		return nil, err
 	}
 
-	lenArr := len(arr.elements)                   // lenx holds the original array length
+	lenArr := arr.length()                        // lenx holds the original array length
 	reversedArray := make([]*cachedThunk, lenArr) // creates a slice that refer to a new array of length lenx
 
-	for i := 0; i < lenArr; i++ {
-		j := lenArr - (i + 1) // j initially holds (lenx - 1) and decreases to 0 while i initially holds 0 and increase to (lenx - 1)
-		reversedArray[i] = arr.elements[j]
+	for idx := 0; idx < lenArr; idx++ {
+		j := lenArr - (idx + 1) // j initially holds (lenx - 1) and decreases to 0 while i initially holds 0 and increase to (lenx - 1)
+		reversedArray[idx] = arr.indexThunkUnsafe(j)
 	}
 
 	return makeValueArray(reversedArray), nil
@@ -428,7 +430,7 @@ func builtinFilter(i *interpreter, funcv, arrv value) (value, error) {
 	// TODO(sbarzowski) verify that it actually helps
 	elems := make([]*cachedThunk, 0, num)
 	for counter := 0; counter < num; counter++ {
-		includedValue, err := fun.call(i, args(arr.elements[counter]))
+		includedValue, err := fun.call(i, args(arr.indexThunkUnsafe(counter)))
 		if err != nil {
 			return nil, err
 		}
@@ -437,7 +439,7 @@ func builtinFilter(i *interpreter, funcv, arrv value) (value, error) {
 			return nil, err
 		}
 		if included.value {
-			elems = append(elems, arr.elements[counter])
+			elems = append(elems, arr.indexThunkUnsafe(counter))
 		}
 	}
 	return makeValueArray(elems), nil
@@ -498,8 +500,9 @@ func builtinSort(i *interpreter, arguments []value) (value, error) {
 
 	for counter := 0; counter < num; counter++ {
 		var err error
-		data.thunks[counter] = arr.elements[counter]
-		data.keys[counter], err = keyF.call(i, args(arr.elements[counter]))
+		element := arr.indexThunkUnsafe(counter)
+		data.thunks[counter] = element
+		data.keys[counter], err = keyF.call(i, args(element))
 		if err != nil {
 			return nil, err
 		}
@@ -628,7 +631,7 @@ func rawEquals(i *interpreter, x, y value) (bool, error) {
 		return stringEqual(left, right), nil
 	case *valueNull:
 		return true, nil
-	case *valueArray:
+	case valueArray:
 		right, err := i.getArray(y)
 		if err != nil {
 			return false, err
@@ -636,12 +639,12 @@ func rawEquals(i *interpreter, x, y value) (bool, error) {
 		if left.length() != right.length() {
 			return false, nil
 		}
-		for j := range left.elements {
-			leftElem, err := i.evaluatePV(left.elements[j])
+		for j := 0; j < left.length(); j++ {
+			leftElem, err := left.index(i, j)
 			if err != nil {
 				return false, err
 			}
-			rightElem, err := i.evaluatePV(right.elements[j])
+			rightElem, err := right.index(i, j)
 			if err != nil {
 				return false, err
 			}
@@ -754,14 +757,14 @@ func builtinBase64(i *interpreter, input value) (value, error) {
 		}
 
 		byteArr = []byte(str)
-	case *valueArray:
+	case valueArray:
 		vArr, err := i.getArray(input)
 		if err != nil {
 			return nil, err
 		}
 
-		for _, cThunk := range vArr.elements {
-			cTv, err := cThunk.getValue(i)
+		for idx := 0; idx < vArr.length(); idx++ {
+			cTv, err := vArr.index(i, idx)
 			if err != nil {
 				return nil, err
 			}
@@ -806,9 +809,9 @@ func builtinDecodeUTF8(i *interpreter, x value) (value, error) {
 	if err != nil {
 		return nil, err
 	}
-	bs := make([]byte, len(arr.elements)) // it will be longer if characters fall outside of ASCII
-	for pos := range arr.elements {
-		v, err := i.evaluateInt(arr.elements[pos])
+	bs := make([]byte, arr.length()) // it will be longer if characters fall outside of ASCII
+	for pos := 0; pos < arr.length(); pos++ {
+		v, err := i.evaluateInt(arr.indexThunkUnsafe(pos))
 		if err != nil {
 			return nil, err
 		}
@@ -1144,8 +1147,8 @@ func builtinUglyObjectFlatMerge(i *interpreter, x value) (value, error) {
 		return nil, err
 	}
 	newFields := make(simpleObjectFieldMap)
-	for _, elem := range objarr.elements {
-		obj, err := i.evaluateObject(elem)
+	for idx := 0; idx < objarr.length(); idx++ {
+		obj, err := i.evaluateObject(objarr.indexThunkUnsafe(idx))
 		if err != nil {
 			return nil, err
 		}
@@ -1285,13 +1288,13 @@ func builtinManifestJSONEx(i *interpreter, arguments []value) (value, error) {
 			return fmt.Sprintf("%t", v.value), nil
 		case *valueFunction:
 			return "", i.Error(fmt.Sprintf("tried to manifest function at %s", path))
-		case *valueArray:
+		case valueArray:
 			newIndent := cindent + sindent
 			lines := []string{"[" + newline}
 
 			var arrayLines []string
-			for aI, cThunk := range v.elements {
-				cTv, err := cThunk.getValue(i)
+			for aI := 0; aI < v.length(); aI++ {
+				cTv, err := v.index(i, aI)
 				if err != nil {
 					return "", err
 				}
@@ -1571,33 +1574,33 @@ var functionID = &valueFunction{ec: builtinID}
 
 var bopBuiltins = []*binaryBuiltin{
 	// Note that % and `in` are desugared instead of being handled here
-	ast.BopMult: &binaryBuiltin{name: "operator*", function: builtinMult, params: ast.Identifiers{"x", "y"}},
-	ast.BopDiv:  &binaryBuiltin{name: "operator/", function: builtinDiv, params: ast.Identifiers{"x", "y"}},
+	ast.BopMult: {name: "operator*", function: builtinMult, params: ast.Identifiers{"x", "y"}},
+	ast.BopDiv:  {name: "operator/", function: builtinDiv, params: ast.Identifiers{"x", "y"}},
 
-	ast.BopPlus:  &binaryBuiltin{name: "operator+", function: builtinPlus, params: ast.Identifiers{"x", "y"}},
-	ast.BopMinus: &binaryBuiltin{name: "operator-", function: builtinMinus, params: ast.Identifiers{"x", "y"}},
+	ast.BopPlus:  {name: "operator+", function: builtinPlus, params: ast.Identifiers{"x", "y"}},
+	ast.BopMinus: {name: "operator-", function: builtinMinus, params: ast.Identifiers{"x", "y"}},
 
-	ast.BopShiftL: &binaryBuiltin{name: "operator<<", function: builtinShiftL, params: ast.Identifiers{"x", "y"}},
-	ast.BopShiftR: &binaryBuiltin{name: "operator>>", function: builtinShiftR, params: ast.Identifiers{"x", "y"}},
+	ast.BopShiftL: {name: "operator<<", function: builtinShiftL, params: ast.Identifiers{"x", "y"}},
+	ast.BopShiftR: {name: "operator>>", function: builtinShiftR, params: ast.Identifiers{"x", "y"}},
 
-	ast.BopGreater:   &binaryBuiltin{name: "operator>", function: builtinGreater, params: ast.Identifiers{"x", "y"}},
-	ast.BopGreaterEq: &binaryBuiltin{name: "operator>=", function: builtinGreaterEq, params: ast.Identifiers{"x", "y"}},
-	ast.BopLess:      &binaryBuiltin{name: "operator<,", function: builtinLess, params: ast.Identifiers{"x", "y"}},
-	ast.BopLessEq:    &binaryBuiltin{name: "operator<=", function: builtinLessEq, params: ast.Identifiers{"x", "y"}},
+	ast.BopGreater:   {name: "operator>", function: builtinGreater, params: ast.Identifiers{"x", "y"}},
+	ast.BopGreaterEq: {name: "operator>=", function: builtinGreaterEq, params: ast.Identifiers{"x", "y"}},
+	ast.BopLess:      {name: "operator<,", function: builtinLess, params: ast.Identifiers{"x", "y"}},
+	ast.BopLessEq:    {name: "operator<=", function: builtinLessEq, params: ast.Identifiers{"x", "y"}},
 
-	ast.BopManifestEqual:   &binaryBuiltin{name: "operator==", function: builtinEquals, params: ast.Identifiers{"x", "y"}},
-	ast.BopManifestUnequal: &binaryBuiltin{name: "operator!=", function: builtinNotEquals, params: ast.Identifiers{"x", "y"}}, // Special case
+	ast.BopManifestEqual:   {name: "operator==", function: builtinEquals, params: ast.Identifiers{"x", "y"}},
+	ast.BopManifestUnequal: {name: "operator!=", function: builtinNotEquals, params: ast.Identifiers{"x", "y"}}, // Special case
 
-	ast.BopBitwiseAnd: &binaryBuiltin{name: "operator&", function: builtinBitwiseAnd, params: ast.Identifiers{"x", "y"}},
-	ast.BopBitwiseXor: &binaryBuiltin{name: "operator^", function: builtinBitwiseXor, params: ast.Identifiers{"x", "y"}},
-	ast.BopBitwiseOr:  &binaryBuiltin{name: "operator|", function: builtinBitwiseOr, params: ast.Identifiers{"x", "y"}},
+	ast.BopBitwiseAnd: {name: "operator&", function: builtinBitwiseAnd, params: ast.Identifiers{"x", "y"}},
+	ast.BopBitwiseXor: {name: "operator^", function: builtinBitwiseXor, params: ast.Identifiers{"x", "y"}},
+	ast.BopBitwiseOr:  {name: "operator|", function: builtinBitwiseOr, params: ast.Identifiers{"x", "y"}},
 }
 
 var uopBuiltins = []*unaryBuiltin{
-	ast.UopNot:        &unaryBuiltin{name: "operator!", function: builtinNegation, params: ast.Identifiers{"x"}},
-	ast.UopBitwiseNot: &unaryBuiltin{name: "operator~", function: builtinBitNeg, params: ast.Identifiers{"x"}},
-	ast.UopPlus:       &unaryBuiltin{name: "operator+ (unary)", function: builtinUnaryPlus, params: ast.Identifiers{"x"}},
-	ast.UopMinus:      &unaryBuiltin{name: "operator- (unary)", function: builtinUnaryMinus, params: ast.Identifiers{"x"}},
+	ast.UopNot:        {name: "operator!", function: builtinNegation, params: ast.Identifiers{"x"}},
+	ast.UopBitwiseNot: {name: "operator~", function: builtinBitNeg, params: ast.Identifiers{"x"}},
+	ast.UopPlus:       {name: "operator+ (unary)", function: builtinUnaryPlus, params: ast.Identifiers{"x"}},
+	ast.UopMinus:      {name: "operator- (unary)", function: builtinUnaryMinus, params: ast.Identifiers{"x"}},
 }
 
 func buildBuiltinMap(builtins []builtin) map[string]evalCallable {
