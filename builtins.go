@@ -757,6 +757,8 @@ func builtinBase64(i *interpreter, input value) (value, error) {
 		}
 
 		byteArr = []byte(str)
+	case *valueBinary:
+		byteArr = input.(*valueBinary).data()
 	case valueArray:
 		vArr, err := i.getArray(input)
 		if err != nil {
@@ -797,11 +799,7 @@ func builtinEncodeUTF8(i *interpreter, x value) (value, error) {
 		return nil, err
 	}
 	s := str.getGoString()
-	elems := make([]*cachedThunk, 0, len(s)) // it will be longer if characters fall outside of ASCII
-	for _, c := range []byte(s) {
-		elems = append(elems, readyThunk(makeValueNumber(float64(c))))
-	}
-	return makeValueArray(elems), nil
+	return makeValueBinary([]byte(s)), nil
 }
 
 func builtinDecodeUTF8(i *interpreter, x value) (value, error) {
@@ -809,16 +807,22 @@ func builtinDecodeUTF8(i *interpreter, x value) (value, error) {
 	if err != nil {
 		return nil, err
 	}
-	bs := make([]byte, arr.length()) // it will be longer if characters fall outside of ASCII
-	for pos := 0; pos < arr.length(); pos++ {
-		v, err := i.evaluateInt(arr.indexThunkUnsafe(pos))
-		if err != nil {
-			return nil, err
+	var bs []byte
+	switch arrType := arr.(type) {
+	case *valueBinary:
+		bs = arrType.data()
+	default:
+		bs = make([]byte, arr.length()) // it will be longer if characters fall outside of ASCII
+		for pos := 0; pos < arr.length(); pos++ {
+			v, err := i.evaluateInt(arr.indexThunkUnsafe(pos))
+			if err != nil {
+				return nil, err
+			}
+			if v < 0 || v > 255 {
+				return nil, i.Error(fmt.Sprintf("Bytes must be integers in range [0, 255], got %d", v))
+			}
+			bs[pos] = byte(v)
 		}
-		if v < 0 || v > 255 {
-			return nil, i.Error(fmt.Sprintf("Bytes must be integers in range [0, 255], got %d", v))
-		}
-		bs[pos] = byte(v)
 	}
 	return makeValueString(string(bs)), nil
 }
@@ -1115,12 +1119,7 @@ func builtinBase64DecodeBytes(i *interpreter, input value) (value, error) {
 		return nil, err
 	}
 
-	res := make([]*cachedThunk, len(decodedBytes))
-	for i := range decodedBytes {
-		res[i] = readyThunk(makeValueNumber(float64(int(decodedBytes[i]))))
-	}
-
-	return makeValueArray(res), nil
+	return makeValueBinary(decodedBytes), nil
 }
 
 func builtinBase64Decode(i *interpreter, input value) (value, error) {
